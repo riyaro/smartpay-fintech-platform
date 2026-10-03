@@ -1,16 +1,18 @@
 using Microsoft.EntityFrameworkCore;
 using SmartPay.BuildingBlocks;
-using SmartPay.PaymentService.Data;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var connectionString =
+    builder.Configuration.GetConnectionString("Payments")
+    ?? "Host=localhost;Port=5435;Database=payment;Username=smartpay;Password=local_dev_only";
+
 builder.Services.AddDbContext<PaymentDbContext>(options =>
-    options.UseNpgsql(
-        builder.Configuration.GetConnectionString("PaymentDb")));
+    options.UseNpgsql(connectionString));
 
 var app = builder.Build();
 
-using (var scope = app.Services.CreateScope())
+await using (var scope = app.Services.CreateAsyncScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
     await db.Database.EnsureCreatedAsync();
@@ -20,53 +22,47 @@ app.MapGet("/health", () =>
     Results.Ok(new HealthResponse("Payment", "Healthy", DateTimeOffset.UtcNow)));
 
 app.MapPost("/payments", async (
-    HttpRequest httpRequest,
+    HttpRequest http,
     CreatePaymentRequest request,
-    PaymentDbContext db) =>
+    PaymentDbContext db,
+    CancellationToken cancellationToken) =>
 {
-    var key = httpRequest.Headers["Idempotency-Key"].FirstOrDefault()?.Trim();
+    var key = http.Headers["Idempotency-Key"].FirstOrDefault();
 
     if (string.IsNullOrWhiteSpace(key))
         return Results.BadRequest(new { error = "Idempotency-Key header is required." });
 
-    if (key.Length > 200)
-        return Results.BadRequest(new { error = "Idempotency-Key must not exceed 200 characters." });
-
     if (request.Amount <= 0)
         return Results.BadRequest(new { error = "Amount must be greater than zero." });
-
-    if (request.Amount > 9999999999999999.99m)
-        return Results.BadRequest(new { error = "Amount is too large." });
 
     if (!string.Equals(request.Currency, "SAR", StringComparison.OrdinalIgnoreCase))
         return Results.BadRequest(new { error = "Only SAR is supported in this demo." });
 
     if (string.IsNullOrWhiteSpace(request.CustomerWalletId) ||
-        string.IsNullOrWhiteSpace(request.MerchantId))
-        return Results.BadRequest(new { error = "CustomerWalletId and MerchantId are required." });
-
-    if (string.IsNullOrWhiteSpace(request.Reference))
-        return Results.BadRequest(new { error = "Reference is required." });
+        string.IsNullOrWhiteSpace(request.MerchantId) ||
+        string.IsNullOrWhiteSpace(request.Reference))
+        return Results.BadRequest(new { error = "Wallet, merchant and reference are required." });
 
     var fingerprint =
-        $"{request.CustomerWalletId}|{request.MerchantId}|{request.Amount}|{request.Currency}|{request.Reference}";
+        $"{request.CustomerWalletId}|{request.MerchantId}|{request.Amount}|SAR|{request.Reference}";
 
-    var existing = await db.Payments
+    var existing = await db.IdempotencyRecords
         .AsNoTracking()
-        .FirstOrDefaultAsync(x => x.IdempotencyKey == key);
+        .Include(x => x.Payment)
+        .SingleOrDefaultAsync(x => x.Key == key, cancellationToken);
 
     if (existing is not null)
     {
-        if (existing.RequestFingerprint != fingerprint)
+        if (existing.Fingerprint != fingerprint)
             return Results.Conflict(new
             {
-                error = "Idempotency key was already used with a different request."
+                error = "This idempotency key was already used with a different request."
             });
 
-        return Results.Ok(ToResponse(existing));
+        return Results.Ok(existing.Payment);
     }
 
-    var payment = new Payment
+    var payment = new PaymentRecord
     {
         Id = Guid.NewGuid(),
         CustomerWalletId = request.CustomerWalletId,
@@ -75,84 +71,71 @@ app.MapPost("/payments", async (
         Currency = "SAR",
         Reference = request.Reference,
         Status = "Pending",
-        CreatedAtUtc = DateTimeOffset.UtcNow,
-        IdempotencyKey = key,
-        RequestFingerprint = fingerprint
+        CreatedAtUtc = DateTimeOffset.UtcNow
     };
 
     db.Payments.Add(payment);
+    db.IdempotencyRecords.Add(new IdempotencyRecord
+    {
+        Key = key,
+        Fingerprint = fingerprint,
+        Payment = payment
+    });
 
     try
     {
-        await db.SaveChangesAsync();
-        return Results.Created($"/payments/{payment.Id}", ToResponse(payment));
+        await db.SaveChangesAsync(cancellationToken);
     }
     catch (DbUpdateException)
     {
-        // Another request may have inserted the same key concurrently.
+        // Another request may have used this key concurrently.
         db.ChangeTracker.Clear();
 
-        var concurrentPayment = await db.Payments
+        var concurrent = await db.IdempotencyRecords
             .AsNoTracking()
-            .FirstOrDefaultAsync(x => x.IdempotencyKey == key);
+            .Include(x => x.Payment)
+            .SingleOrDefaultAsync(x => x.Key == key, cancellationToken);
 
-        if (concurrentPayment is null)
-            throw;
+        if (concurrent is not null)
+        {
+            if (concurrent.Fingerprint != fingerprint)
+                return Results.Conflict(new
+                {
+                    error = "This idempotency key was already used with a different request."
+                });
 
-        if (concurrentPayment.RequestFingerprint != fingerprint)
-            return Results.Conflict(new
-            {
-                error = "Idempotency key was already used with a different request."
-            });
+            return Results.Ok(concurrent.Payment);
+        }
 
-        return Results.Ok(ToResponse(concurrentPayment));
+        throw;
     }
+
+    return Results.Created($"/payments/{payment.Id}", payment);
 });
 
 app.MapGet("/payments/{id:guid}", async (
     Guid id,
-    PaymentDbContext db) =>
+    PaymentDbContext db,
+    CancellationToken cancellationToken) =>
 {
-    var payment = await db.Payments
-        .AsNoTracking()
-        .FirstOrDefaultAsync(x => x.Id == id);
+    var payment = await db.Payments.AsNoTracking()
+        .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
 
-    return payment is null
-        ? Results.NotFound()
-        : Results.Ok(ToResponse(payment));
+    return payment is null ? Results.NotFound() : Results.Ok(payment);
 });
 
-app.MapGet("/payments", async (PaymentDbContext db) =>
+app.MapGet("/payments", async (
+    PaymentDbContext db,
+    CancellationToken cancellationToken) =>
 {
-    var payments = await db.Payments
-        .AsNoTracking()
+    var payments = await db.Payments.AsNoTracking()
         .OrderByDescending(x => x.CreatedAtUtc)
-        .Select(x => new PaymentResponse(
-            x.Id,
-            x.CustomerWalletId,
-            x.MerchantId,
-            x.Amount,
-            x.Currency,
-            x.Reference,
-            x.Status,
-            x.CreatedAtUtc))
-        .ToListAsync();
+        .ToListAsync(cancellationToken);
 
     return Results.Ok(payments);
 });
 
 app.Run();
-
-static PaymentResponse ToResponse(Payment payment) =>
-    new(
-        payment.Id,
-        payment.CustomerWalletId,
-        payment.MerchantId,
-        payment.Amount,
-        payment.Currency,
-        payment.Reference,
-        payment.Status,
-        payment.CreatedAtUtc);
 
 public sealed record CreatePaymentRequest(
     string CustomerWalletId,
@@ -161,12 +144,54 @@ public sealed record CreatePaymentRequest(
     string Currency,
     string Reference);
 
-public sealed record PaymentResponse(
-    Guid Id,
-    string CustomerWalletId,
-    string MerchantId,
-    decimal Amount,
-    string Currency,
-    string Reference,
-    string Status,
-    DateTimeOffset CreatedAtUtc);
+public sealed class PaymentRecord
+{
+    public Guid Id { get; set; }
+    public string CustomerWalletId { get; set; } = "";
+    public string MerchantId { get; set; } = "";
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = "SAR";
+    public string Reference { get; set; } = "";
+    public string Status { get; set; } = "Pending";
+    public DateTimeOffset CreatedAtUtc { get; set; }
+}
+
+public sealed class IdempotencyRecord
+{
+    public string Key { get; set; } = "";
+    public string Fingerprint { get; set; } = "";
+    public Guid PaymentId { get; set; }
+    public PaymentRecord Payment { get; set; } = null!;
+}
+
+public sealed class PaymentDbContext(DbContextOptions<PaymentDbContext> options)
+    : DbContext(options)
+{
+    public DbSet<PaymentRecord> Payments => Set<PaymentRecord>();
+    public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<PaymentRecord>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Amount).HasPrecision(18, 2);
+            entity.Property(x => x.Currency).HasMaxLength(3).IsRequired();
+            entity.Property(x => x.Reference).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.CustomerWalletId).HasMaxLength(100).IsRequired();
+            entity.Property(x => x.MerchantId).HasMaxLength(100).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(30).IsRequired();
+        });
+
+        modelBuilder.Entity<IdempotencyRecord>(entity =>
+        {
+            entity.HasKey(x => x.Key);
+            entity.Property(x => x.Key).HasMaxLength(200);
+            entity.Property(x => x.Fingerprint).HasMaxLength(1000).IsRequired();
+            entity.HasOne(x => x.Payment)
+                .WithMany()
+                .HasForeignKey(x => x.PaymentId)
+                .IsRequired();
+        });
+    }
+}
