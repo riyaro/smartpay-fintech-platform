@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartPay.BuildingBlocks", "src\BuildingBlocks\SmartPay.BuildingBlocks\SmartPay.BuildingBlocks.csproj", "{B0A00001-1000-4000-8000-000000000001}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartPay.IdentityService", "src\Services\Identity\SmartPay.IdentityService\SmartPay.IdentityService.csproj", "{B0A00002-1000-4000-8000-000000000002}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartPay.WalletService", "src\Services\Wallet\SmartPay.WalletService\SmartPay.WalletService.csproj", "{B0A00003-1000-4000-8000-000000000003}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartPay.PaymentService", "src\Services\Payment\SmartPay.PaymentService\SmartPay.PaymentService.csproj", "{B0A00004-1000-4000-8000-000000000004}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartPay.RiskService", "src\Services\Risk\SmartPay.RiskService\SmartPay.RiskService.csproj", "{B0A00005-1000-4000-8000-000000000005}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartPay.LedgerService", "src\Services\Ledger\SmartPay.LedgerService\SmartPay.LedgerService.csproj", "{B0A00006-1000-4000-8000-000000000006}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartPay.NotificationService", "src\Services\Notification\SmartPay.NotificationService\SmartPay.NotificationService.csproj", "{B0A00007-1000-4000-8000-000000000007}"
+EndProject
+Global
+    GlobalSection(SolutionConfigurationPlatforms) = preSolution
+        Debug|Any CPU = Debug|Any CPU
+        Release|Any CPU = Release|Any CPU
+    EndGlobalSection
+EndGlobal
