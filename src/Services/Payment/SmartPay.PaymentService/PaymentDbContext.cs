@@ -21,6 +21,8 @@ public sealed class PaymentDbContext(DbContextOptions<PaymentDbContext> options)
 {
     public DbSet<PaymentEntity> Payments => Set<PaymentEntity>();
 
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         var payment = modelBuilder.Entity<PaymentEntity>();
@@ -36,5 +38,13 @@ public sealed class PaymentDbContext(DbContextOptions<PaymentDbContext> options)
         payment.Property(p => p.IdempotencyKey).HasMaxLength(200).IsRequired();
         payment.Property(p => p.Fingerprint).HasMaxLength(500).IsRequired();
         payment.HasIndex(p => p.IdempotencyKey).IsUnique();
+
+        var outbox = modelBuilder.Entity<OutboxMessage>();
+
+        outbox.ToTable("OutboxMessages");
+        outbox.HasKey(x => x.Id);
+        outbox.Property(x => x.Type).HasMaxLength(200).IsRequired();
+        outbox.Property(x => x.Payload).IsRequired();
+        outbox.HasIndex(x => x.ProcessedAtUtc);
     }
 }

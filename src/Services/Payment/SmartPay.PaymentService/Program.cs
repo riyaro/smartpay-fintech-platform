@@ -14,6 +14,7 @@ builder.Services.AddDbContext<PaymentDbContext>(options =>
     options.UseNpgsql(connectionString);
 });
 
+builder.Services.AddHostedService<OutboxPublisher>();
 var app = builder.Build();
 
 // For this initial local-development step. We'll replace this with EF migrations.
@@ -81,6 +82,28 @@ app.MapPost("/payments", async (
     };
 
     db.Payments.Add(payment);
+
+    var outboxMessage = new OutboxMessage
+    {
+        Id = Guid.NewGuid(),
+        Type = "PaymentCreated",
+        Payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                payment.Id,
+                payment.CustomerWalletId,
+                payment.MerchantId,
+                payment.Amount,
+                payment.Currency,
+                payment.Reference,
+                payment.Status,
+                payment.CreatedAtUtc
+            }),
+        OccurredAtUtc = DateTimeOffset.UtcNow,
+        RetryCount = 0
+    };
+
+    db.OutboxMessages.Add(outboxMessage);
+
     await db.SaveChangesAsync(cancellationToken);
 
     return Results.Created($"/payments/{payment.Id}", ToResponse(payment));
