@@ -1,4 +1,5 @@
 using SmartPay.BuildingBlocks;
+using SmartPay.RiskService;
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<RiskStore>();
 var app = builder.Build();

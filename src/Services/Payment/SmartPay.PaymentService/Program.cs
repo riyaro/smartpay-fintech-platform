@@ -14,6 +14,13 @@ builder.Services.AddDbContext<PaymentDbContext>(options =>
     options.UseNpgsql(connectionString);
 });
 
+builder.Services.AddHttpClient("RiskService", client =>
+{
+    client.BaseAddress = new Uri(
+        builder.Configuration["RiskService:BaseUrl"] ?? "http://localhost:5104");
+    client.Timeout = TimeSpan.FromSeconds(5);
+});
+
 builder.Services.AddHostedService<OutboxPublisher>();
 var app = builder.Build();
 
@@ -130,6 +137,58 @@ app.MapPost("/payments/{id:guid}/status", async (
         return Results.Conflict(new { error });
     }
 
+    if (request.Status == "Processing")
+    {
+        var riskClient = app.Services
+            .GetRequiredService<IHttpClientFactory>()
+            .CreateClient("RiskService");
+
+        var riskRequest = new
+        {
+            amount = payment.Amount,
+            currency = payment.Currency,
+            customerWalletId = payment.CustomerWalletId,
+            merchantId = payment.MerchantId
+        };
+
+        var riskResponse = await riskClient.PostAsJsonAsync(
+            "/risk/evaluate",
+            riskRequest,
+            cancellationToken);
+
+        if (!riskResponse.IsSuccessStatusCode)
+        {
+            return Results.StatusCode(503);
+        }
+
+        var riskResult =
+            await riskResponse.Content.ReadFromJsonAsync<RiskResponse>(
+                cancellationToken);
+
+        if (riskResult is null)
+        {
+            return Results.StatusCode(503);
+        }
+
+        if (riskResult.Decision == "Rejected")
+        {
+            return Results.Conflict(new
+            {
+                error = "Payment rejected by risk service.",
+                reason = riskResult.Reason
+            });
+        }
+
+        if (riskResult.Decision == "Review")
+        {
+            return Results.Conflict(new
+            {
+                error = "Payment requires risk review.",
+                reason = riskResult.Reason
+            });
+        }
+    }
+
     var previousStatus = payment.Status;
     payment.Status = request.Status;
 
@@ -201,6 +260,10 @@ static PaymentResponse ToResponse(PaymentEntity payment) =>
         payment.CreatedAtUtc);
 
 public sealed record UpdatePaymentStatusRequest(string Status);
+
+public sealed record RiskResponse(
+    string Decision,
+    string Reason);
 
 public sealed record CreatePaymentRequest(
     string CustomerWalletId,
