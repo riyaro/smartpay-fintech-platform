@@ -109,6 +109,57 @@ app.MapPost("/payments", async (
     return Results.Created($"/payments/{payment.Id}", ToResponse(payment));
 });
 
+
+app.MapPost("/payments/{id:guid}/status", async (
+    Guid id,
+    UpdatePaymentStatusRequest request,
+    PaymentDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var payment = await db.Payments
+        .SingleOrDefaultAsync(p => p.Id == id, cancellationToken);
+
+    if (payment is null)
+        return Results.NotFound(new { error = "Payment not found." });
+
+    if (!PaymentStateMachine.TryTransition(
+            payment.Status,
+            request.Status,
+            out var error))
+    {
+        return Results.Conflict(new { error });
+    }
+
+    var previousStatus = payment.Status;
+    payment.Status = request.Status;
+
+    var outboxMessage = new OutboxMessage
+    {
+        Id = Guid.NewGuid(),
+        Type = "PaymentStatusChanged",
+        Payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            payment.Id,
+            payment.CustomerWalletId,
+            payment.MerchantId,
+            payment.Amount,
+            payment.Currency,
+            payment.Reference,
+            PreviousStatus = previousStatus,
+            NewStatus = payment.Status,
+            ChangedAtUtc = DateTimeOffset.UtcNow
+        }),
+        OccurredAtUtc = DateTimeOffset.UtcNow,
+        RetryCount = 0
+    };
+
+    db.OutboxMessages.Add(outboxMessage);
+
+    await db.SaveChangesAsync(cancellationToken);
+
+    return Results.Ok(ToResponse(payment));
+});
+
 app.MapGet("/payments/{id:guid}", async (
     Guid id,
     PaymentDbContext db,
@@ -148,6 +199,8 @@ static PaymentResponse ToResponse(PaymentEntity payment) =>
         payment.Reference,
         payment.Status,
         payment.CreatedAtUtc);
+
+public sealed record UpdatePaymentStatusRequest(string Status);
 
 public sealed record CreatePaymentRequest(
     string CustomerWalletId,
