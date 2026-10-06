@@ -21,6 +21,12 @@ builder.Services.AddHttpClient("RiskService", client =>
     client.Timeout = TimeSpan.FromSeconds(5);
 });
 
+builder.Services.AddHttpClient("LedgerService", client =>
+{
+    client.BaseAddress = new Uri(
+        builder.Configuration["LedgerService:BaseUrl"] ?? "http://localhost:5105");
+});
+
 builder.Services.AddHostedService<OutboxPublisher>();
 var app = builder.Build();
 
@@ -191,6 +197,32 @@ app.MapPost("/payments/{id:guid}/status", async (
 
     var previousStatus = payment.Status;
     payment.Status = request.Status;
+    if (request.Status == "Completed")
+    {
+        var ledgerClient = app.Services
+                .GetRequiredService<IHttpClientFactory>()
+                        .CreateClient("LedgerService");
+
+                            var ledgerRequest = new
+                                {
+                                        transactionId = payment.Id,
+                                                accountName = payment.CustomerWalletId,
+                                                        counterpartyAccountName = payment.MerchantId,
+                                                                amount = payment.Amount,
+                                                                        currency = payment.Currency
+                                                                            };
+
+                                                                                var ledgerResponse = await ledgerClient.PostAsJsonAsync(
+                                                                                        "/ledger/entry",
+                                                                                                ledgerRequest,
+                                                                                                        cancellationToken);
+
+                                                                                                            if (!ledgerResponse.IsSuccessStatusCode &&
+                                                                                                                    (int)ledgerResponse.StatusCode != 409)
+                                                                                                                        {
+                                                                                                                                return Results.StatusCode(503);
+                                                                                                                                    }
+                                                                                                                                    }
 
     var outboxMessage = new OutboxMessage
     {
