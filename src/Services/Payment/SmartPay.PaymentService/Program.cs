@@ -224,6 +224,7 @@ app.MapPost("/payments/{id:guid}/status", async (
                                                                                                                                     }
                                                                                                                                     }
 
+
     var outboxMessage = new OutboxMessage
     {
         Id = Guid.NewGuid(),
