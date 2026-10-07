@@ -38,10 +38,12 @@ app.MapPost("/wallets", async (
     var currency = request.Currency.Trim().ToUpperInvariant();
 
     if (currency.Length != 3)
+    {
         return Results.BadRequest(new
         {
             error = "Currency must be a 3-letter code."
         });
+    }
 
     var existingWallet = await db.Wallets
         .FirstOrDefaultAsync(x =>
@@ -49,11 +51,13 @@ app.MapPost("/wallets", async (
             x.Currency == currency);
 
     if (existingWallet is not null)
+    {
         return Results.Conflict(new
         {
             error = "A wallet already exists for this owner and currency.",
             walletId = existingWallet.Id
         });
+    }
 
     var wallet = new Wallet
     {
@@ -102,19 +106,15 @@ app.MapPost("/wallets/{id:guid}/transactions", async (
     WalletDbContext db) =>
 {
     if (request.Amount <= 0)
+    {
         return Results.BadRequest(new
         {
             error = "Amount must be greater than zero."
         });
+    }
 
-    if (!string.Equals(
-            request.Type,
-            "Credit",
-            StringComparison.OrdinalIgnoreCase) &&
-        !string.Equals(
-            request.Type,
-            "Debit",
-            StringComparison.OrdinalIgnoreCase))
+    if (!string.Equals(request.Type, "Credit", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(request.Type, "Debit", StringComparison.OrdinalIgnoreCase))
     {
         return Results.BadRequest(new
         {
@@ -123,14 +123,36 @@ app.MapPost("/wallets/{id:guid}/transactions", async (
     }
 
     if (string.IsNullOrWhiteSpace(request.Reference))
+    {
         return Results.BadRequest(new
         {
             error = "Reference is required."
         });
+    }
+
+    if (string.IsNullOrWhiteSpace(request.Currency))
+    {
+        return Results.BadRequest(new
+        {
+            error = "Currency is required."
+        });
+    }
+
+    var requestCurrency = request.Currency.Trim().ToUpperInvariant();
+
+    if (requestCurrency.Length != 3)
+    {
+        return Results.BadRequest(new
+        {
+            error = "Currency must be a 3-letter code."
+        });
+    }
 
     await using var databaseTransaction =
         await db.Database.BeginTransactionAsync();
 
+    // Lock the wallet row so concurrent transactions for the same wallet
+    // are processed one at a time.
     var wallet = await db.Wallets
         .FromSqlInterpolated(
             $"SELECT * FROM \"Wallets\" WHERE \"Id\" = {id} FOR UPDATE")
@@ -152,13 +174,38 @@ app.MapPost("/wallets/{id:guid}/transactions", async (
 
     if (!string.Equals(
             wallet.Currency,
-            request.Currency,
+            requestCurrency,
             StringComparison.OrdinalIgnoreCase))
     {
         return Results.BadRequest(new
         {
             error = "Transaction currency does not match wallet currency."
         });
+    }
+
+    // Phase 9 idempotency:
+    // The Reference acts as the idempotency key.
+    //
+    // If the exact reference was already processed for this wallet,
+    // return the original transaction instead of applying the balance
+    // change again.
+    var existingTransaction = await db.WalletTransactions
+        .AsNoTracking()
+        .FirstOrDefaultAsync(x =>
+            x.WalletId == wallet.Id &&
+            x.Reference == request.Reference);
+
+    if (existingTransaction is not null)
+    {
+        return Results.Ok(new WalletTransactionResponse(
+            existingTransaction.Id,
+            existingTransaction.WalletId,
+            existingTransaction.Type,
+            existingTransaction.Amount,
+            existingTransaction.Currency,
+            existingTransaction.Reference,
+            wallet.Balance,
+            existingTransaction.CreatedAtUtc));
     }
 
     var isCredit = string.Equals(
