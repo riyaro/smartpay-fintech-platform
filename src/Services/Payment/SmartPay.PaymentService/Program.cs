@@ -30,6 +30,20 @@ builder.Services.AddHttpClient("LedgerService", client =>
 builder.Services.AddHostedService<OutboxPublisher>();
 var app = builder.Build();
 
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/json";
+
+        await context.Response.WriteAsJsonAsync(new
+        {
+            error = "An unexpected error occurred."
+        });
+    });
+});
+
 // For this initial local-development step. We'll replace this with EF migrations.
 using (var scope = app.Services.CreateScope())
 {
