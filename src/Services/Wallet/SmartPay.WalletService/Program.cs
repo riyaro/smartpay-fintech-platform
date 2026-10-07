@@ -19,11 +19,26 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-app.MapGet("/health", () =>
-    Results.Ok(new HealthResponse(
-        "Wallet",
-        "Healthy",
-        DateTimeOffset.UtcNow)));
+app.MapGet("/health", async (WalletDbContext db, CancellationToken cancellationToken) =>
+{
+    var databaseHealthy = await db.Database.CanConnectAsync(cancellationToken);
+
+    if (!databaseHealthy)
+    {
+        return Results.Json(
+            new HealthResponse(
+                "Wallet",
+                "Unhealthy",
+                DateTimeOffset.UtcNow),
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    return Results.Ok(
+        new HealthResponse(
+            "Wallet",
+            "Healthy",
+            DateTimeOffset.UtcNow));
+});
 
 app.MapPost("/wallets", async (
     CreateWalletRequest request,
