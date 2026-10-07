@@ -12,11 +12,22 @@ builder.Services.AddDbContext<LedgerDbContext>(options =>
 
 var app = builder.Build();
 
-app.MapGet("/health", () =>
-    Results.Ok(new HealthResponse(
-        "Ledger",
-        "Healthy",
-        DateTimeOffset.UtcNow)));
+app.MapGet("/health", async (LedgerDbContext db) =>
+{
+    var healthy = await db.Database.CanConnectAsync();
+
+    return healthy
+        ? Results.Ok(new HealthResponse(
+            "Ledger",
+            "Healthy",
+            DateTimeOffset.UtcNow))
+        : Results.Json(
+            new HealthResponse(
+                "Ledger",
+                "Unhealthy",
+                DateTimeOffset.UtcNow),
+            statusCode: 503);
+});
 
 app.MapGet("/ledger/entries", async (LedgerDbContext db) =>
 {
