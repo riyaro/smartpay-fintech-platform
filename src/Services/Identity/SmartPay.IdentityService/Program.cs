@@ -46,8 +46,22 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-app.MapGet("/health", () =>
-    Results.Ok(new HealthResponse("Identity", "Healthy", DateTimeOffset.UtcNow)));
+app.MapGet("/health", async (IdentityDbContext db) =>
+{
+    var healthy = await db.Database.CanConnectAsync();
+
+    return healthy
+        ? Results.Ok(new HealthResponse(
+            "Identity",
+            "Healthy",
+            DateTimeOffset.UtcNow))
+        : Results.Json(
+            new HealthResponse(
+                "Identity",
+                "Unhealthy",
+                DateTimeOffset.UtcNow),
+            statusCode: 503);
+});
 
 app.MapPost("/customers", async (
     CreateCustomerRequest request,
