@@ -3,6 +3,34 @@ using SmartPay.RiskService;
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<RiskStore>();
 var app = builder.Build();
+
+app.Use(async (context, next) =>
+{
+    var correlationId = context.Request.Headers["X-Correlation-ID"].FirstOrDefault()
+        ?? Guid.NewGuid().ToString();
+
+    context.Response.Headers["X-Correlation-ID"] = correlationId;
+
+    using (app.Logger.BeginScope(new Dictionary<string, object>
+    {
+        ["CorrelationId"] = correlationId
+    }))
+    {
+        app.Logger.LogInformation(
+            "Request started: {Method} {Path}",
+            context.Request.Method,
+            context.Request.Path);
+
+        await next();
+
+        app.Logger.LogInformation(
+            "Request completed: {Method} {Path} {StatusCode}",
+            context.Request.Method,
+            context.Request.Path,
+            context.Response.StatusCode);
+    }
+} );
+
 app.MapGet("/health", () => Results.Ok(new HealthResponse("Risk", "Healthy", DateTimeOffset.UtcNow)));
 
 app.MapPost("/risk/evaluate", (RiskRequest request) => {
