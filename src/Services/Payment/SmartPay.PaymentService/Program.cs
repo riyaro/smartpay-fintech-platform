@@ -43,10 +43,7 @@ app.Use(async (context, next) =>
 
     context.Response.Headers[headerName] = correlationId;
 
-    using (app.Logger.BeginScope(new Dictionary<string, object>
-    {
-        ["CorrelationId"] = correlationId
-    }))
+    using (app.Logger.BeginScope("CorrelationId: {CorrelationId}", correlationId))
     {
         app.Logger.LogInformation(
             "Request started: {Method} {Path}",
