@@ -30,6 +30,39 @@ builder.Services.AddHttpClient("LedgerService", client =>
 builder.Services.AddHostedService<OutboxPublisher>();
 var app = builder.Build();
 
+app.Use(async (context, next) =>
+{
+    const string headerName = "X-Correlation-ID";
+
+    var correlationId = context.Request.Headers[headerName].FirstOrDefault();
+
+    if (string.IsNullOrWhiteSpace(correlationId))
+    {
+        correlationId = Guid.NewGuid().ToString();
+    }
+
+    context.Response.Headers[headerName] = correlationId;
+
+    using (app.Logger.BeginScope(new Dictionary<string, object>
+    {
+        ["CorrelationId"] = correlationId
+    }))
+    {
+        app.Logger.LogInformation(
+            "Request started: {Method} {Path}",
+            context.Request.Method,
+            context.Request.Path);
+
+        await next();
+
+        app.Logger.LogInformation(
+            "Request completed: {Method} {Path} {StatusCode}",
+            context.Request.Method,
+            context.Request.Path,
+            context.Response.StatusCode);
+    }
+});
+
 app.UseExceptionHandler(errorApp =>
 {
     errorApp.Run(async context =>
