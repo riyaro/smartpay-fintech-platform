@@ -1,6 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using SmartPay.BuildingBlocks;
 using SmartPay.IdentityService.Data;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddScoped<Microsoft.AspNetCore.Identity.IPasswordHasher<SmartPay.IdentityService.Data.Customer>,
@@ -11,7 +14,30 @@ builder.Services.AddDbContext<IdentityDbContext>(options =>
     options.UseNpgsql(
         builder.Configuration.GetConnectionString("IdentityDb")));
 
+var jwtKey = builder.Configuration["Jwt:Key"]
+    ?? "SmartPay-Local-Development-Secret-Key-123456789";
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = false,
+            ValidateAudience = false,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(jwtKey))
+        };
+    });
+
+builder.Services.AddAuthorization();
+
 var app = builder.Build();
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 // For the initial local prototype. We'll replace this with EF migrations.
 using (var scope = app.Services.CreateScope())
@@ -86,11 +112,39 @@ app.MapPost("/login", async (
     if (result == Microsoft.AspNetCore.Identity.PasswordVerificationResult.Failed)
         return Results.Unauthorized();
 
+    var jwtKey = builder.Configuration["Jwt:Key"]
+        ?? "SmartPay-Local-Development-Secret-Key-123456789";
+
+    var claims = new[]
+    {
+        new System.Security.Claims.Claim(
+            System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub,
+            customer.Id.ToString()),
+        new System.Security.Claims.Claim(
+            System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Email,
+            customer.Email),
+        new System.Security.Claims.Claim(
+            "kycStatus",
+            customer.KycStatus)
+    };
+
+    var credentials = new Microsoft.IdentityModel.Tokens.SigningCredentials(
+        new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(
+            System.Text.Encoding.UTF8.GetBytes(jwtKey)),
+        Microsoft.IdentityModel.Tokens.SecurityAlgorithms.HmacSha256);
+
+    var token = new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(
+        claims: claims,
+        expires: DateTime.UtcNow.AddHours(1),
+        signingCredentials: credentials);
+
     return Results.Ok(new
     {
         customerId = customer.Id,
         email = customer.Email,
-        kycStatus = customer.KycStatus
+        kycStatus = customer.KycStatus,
+        accessToken = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler()
+            .WriteToken(token)
     });
 });
 
@@ -109,7 +163,7 @@ app.MapGet("/customers/{id:guid}", async (
         customer.Id,
         customer.Email,
         customer.KycStatus));
-});
+}).RequireAuthorization();
 
 app.Run();
 
